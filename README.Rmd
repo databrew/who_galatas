@@ -1,12 +1,26 @@
-Population analysis
-================
+---
+title: 'Population analysis'
+output: github_document
+---
 
-Idenitifying the population living outside of a 5km radius of the
-nearest HF per district
+
+```{r setup, include=FALSE, echo = FALSE}
+# Basic knitr options
+library(knitr)
+opts_chunk$set(comment = NA, 
+               echo = TRUE, 
+               warning = FALSE, 
+               message = FALSE, 
+               error = TRUE, 
+               cache = FALSE,
+               fig.path = 'figures/')
+```
+
+Idenitifying the population living outside of a 5km radius of the nearest HF per district
 
 ### Libraries
 
-``` r
+```{r}
 require(raster)
 require(sp)
 require(rgdal)
@@ -28,28 +42,19 @@ library(gridsample)
 
 Populate your `data` folder with the following files:
 
-``` 
- [1] "cmr_bsgme_v0a_100m_2018.tif" "CMR_HDs.dbf"                
- [3] "CMR_HDs.prj"                 "CMR_HDs.sbn"                
- [5] "CMR_HDs.sbx"                 "CMR_HDs.shp"                
- [7] "CMR_HDs.shx"                 "CMR_HFs_GPS_Public.csv"     
- [9] "cmr_ppp_2018.tif"            "rcode.zip"                  
+```{r, echo = FALSE}
+dir('data')
 ```
 
 ### Import shapefile
 
-``` r
+```{r}
 cmrshp <- readOGR("data", "CMR_HDs")
 ```
 
-    OGR data source with driver: ESRI Shapefile 
-    Source: "/home/joebrew/Documents/who_galatas/data", layer: "CMR_HDs"
-    with 189 features
-    It has 7 fields
-
 ### Import HF GPs coordinates
 
-``` r
+```{r}
 hfpub <- read.csv("data/CMR_HFs_GPS_Public.csv")
 hfpub <- na.omit(hfpub)
 coordinates(hfpub) <- ~Long+Lat
@@ -58,24 +63,22 @@ proj4string(hfpub) <- proj4string(cmrshp)
 
 ### Import raster
 
-``` r
+```{r}
 # Read the raster
 # poprast <-raster("data/cmr_bsgme_v0a_100m_2018.tif")
 poprast <- raster('data/cmr_ppp_2018.tif')#https://www.worldpop.org/geodata/summary?id=5849
 # strata <- rasterize(cmrshp,poprast, field="Map_Code")
 ```
 
-### Estimate the total population according to the entire file
+### Estimate the total population according to the entire file 
 
-``` r
+```{r}
 sum(values(poprast), na.rm = T)
 ```
 
-    [1] 26391583
-
 ### Estimate the population per polygon
 
-``` r
+```{r}
 # The below operation is slow, so saving a temp file to speed up on multiple runs
 if('x.RData' %in% dir()){
   load('x.RData')
@@ -87,11 +90,7 @@ populations <- lapply(x, sum, na.rm = T)
 populations <- unlist(populations)
 # Test to ensure we're on the right track
 sum(populations)
-```
 
-    [1] 26281588
-
-``` r
 # Insert the polygon-specific populations
 # into the spatial df
 cmrshp@data$population <- populations
@@ -99,7 +98,7 @@ cmrshp@data$population <- populations
 
 ## Create 5km buffers around health posts
 
-``` r
+```{r}
 # devtools::install_github("valentinitnelav/geobuffer")
 library(geobuffer)
 
@@ -112,7 +111,7 @@ proj4string(bufs) <- proj4string(cmrshp)
 
 ## Get the polygon (district) for each health post
 
-``` r
+```{r}
 # index numbers
 indices <- sp::over(hfpub, polygons(cmrshp))
 
@@ -126,15 +125,16 @@ hfpub@data$District_index <- indices
 
 ## Get the population of the district of each health facility
 
-``` r
+```{r}
 hfpub@data <- left_join(hfpub@data,
                cmrshp@data %>%
                  dplyr::select(District, population))
 ```
 
+
 ## Get the population within 5 km
 
-``` r
+```{r, eval = FALSE}
 if('hfpub.RData' %in% dir()){
   load('hfpub.RData')
 } else {
@@ -160,18 +160,20 @@ if('hfpub.RData' %in% dir()){
 
 Calculate amount of people within district but outside of buffer area
 
-``` r
+```{r, eval = FALSE}
 hfpub@data$magic_number <-
   hfpub@data$population -
   hfpub@data$population_in_buffer_within_district
 ```
 
+
 ## Create dataset
 
-Create a data base with one row per pixel and its respective population
-value
+Create a data base with one row per pixel and its respective population value 
 
-``` r
+```{r}
 xyz <- rasterToPoints(poprast)
 xyz <- data.frame(xyz)
 ```
+
+
