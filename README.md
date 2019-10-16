@@ -73,6 +73,8 @@ sum(values(poprast), na.rm = T)
 
     [1] 26391583
 
+### Trim the raster to only fit the area
+
 ### Estimate the population per polygon
 
 ``` r
@@ -132,46 +134,178 @@ hfpub@data <- left_join(hfpub@data,
                  dplyr::select(District, population))
 ```
 
-## Get the population within 5 km
+## Get the close / far population
 
 ``` r
-if('hfpub.RData' %in% dir()){
-  load('hfpub.RData')
+if('cmrshp.RData' %in% dir()){
+  load('cmrshp.RData')
 } else {
-  hfpub@data$population_in_buffer <- NA
-  hfpub@data$population_in_buffer_within_district <- NA
-  for(i in 1:length(bufs)){
-    this_buf <- bufs[i]
-    this_district <- hfpub@data$District[i]
-    this_shp <- cmrshp[cmrshp@data$District == this_district,]
-    this_buf_in_district <- rgeos::gIntersection(this_buf, this_shp)
-    pop_in_buf <- sum(unlist(raster::extract(poprast, this_buf, method = 'sum', na.rm = TRUE)), na.rm = TRUE)
-    pop_in_buf_and_district <- sum(unlist(raster::extract(poprast, this_buf_in_district, method = 'sum', na.rm = TRUE)), na.rm = TRUE)
-    # Put into the hf dataframe
-    hfpub@data$population_in_buffer[i] <- pop_in_buf
-    hfpub@data$population_in_buffer_within_district[i] <- pop_in_buf_and_district
-  message(i)
+  # Make the buffers into a spatial polygon dataframe
+  # bufs and hfpub are ordered identically, so we can ignore ids on the join
+  df <- SpatialPolygonsDataFrame(Sr = bufs,
+                                 data = hfpub@data,
+                                 match.ID = FALSE)
+  # Take a look at all the buffered areas
+  plot(df)
+  
+  # "Collapse" the buffered areas into one
+  df_collapsed <- gUnaryUnion(df)
+  
+  # Take another look
+  plot(cmrshp, col = adjustcolor('blue', alpha.f = 0.3), border = NA)
+  plot(df_collapsed, col = 'red', add = T, border = NA)
+  
+  # Create a "cleaner" spatialPolygonsDataFrame with only two areas
+  # Start by collapsing the overall shapefile
+  hole <- gUnaryUnion(cmrshp)
+  hole <- SpatialPolygonsDataFrame(Sr = hole, data = data.frame(id = 1))
+  library(spatialEco)
+  cmrshp_collapsed <- remove.holes(hole) #and removing vestigial holes
+  # Combine the in and out areas
+  x <- rgeos::gDifference(cmrshp_collapsed, df_collapsed)
+  # Now x is "outside" and df_collapsed is "inside". Combine them:
+  outside <- SpatialPolygonsDataFrame(Sr = x, data.frame(where = 'Outside'))
+  inside <- SpatialPolygonsDataFrame(Sr = df_collapsed, data.frame(where = 'Inside'))
+  proj4string(outside) <- proj4string(inside) <- proj4string(cmrshp)
+  combined <- rbind(outside, inside)
+  
+  # Take another look
+  plot(combined, col = c('grey', 'yellow'))
+  
+  # Note that there are only two rows in the associated dataframe = in or out
+  combined@data
+  
+  # Make a spatial pixels df
+  r = brick(poprast)
+  r <- as(r, "SpatialPixelsDataFrame")
+  names(r@data) <- c('population')
+  # Make into a spatial points dataframe
+  x <- SpatialPointsDataFrame(coords = coordinates(r),
+                              data = r@data)
+
+  # Now loop through each district calculating the number of in/out people
+  library(sf)
+  cmrshp@data$close <- NA
+  cmrshp@data$far <- NA
+  for(i in 1:nrow(cmrshp@data)){
+    message(i)
+    
+    # Get shape of area
+    this_shp <- cmrshp[i,]
+    
+    # Get the combined (in/out) areas for this district
+    this_combined <- crop(combined, this_shp)
+
+    # Divide into the inside/outside areas
+    this_inside <- this_combined[this_combined@data$where == 'Inside',]
+    this_outside <- this_combined[this_combined@data$where == 'Outside',]
+    
+    # Crop the raster to only fit the area in question
+    if(nrow(this_inside) > 0){
+      cropped_inside <- crop(poprast, this_inside)
+      cropped_inside <- mask(cropped_inside, this_inside)
+      population_inside <- sum(values(cropped_inside),na.rm = T)
+    } else {
+      population_inside <- 0
+    }
+    
+    if(nrow(this_outside) > 0){
+      cropped_outside <- crop(poprast, this_outside)
+      cropped_outside <- mask(cropped_outside, this_outside)
+      population_outside <- sum(values(cropped_outside), na.rm = T)
+    } else {
+      population_outside <- 0
+    }
+    
+    # Now insert into dataset
+    cmrshp@data$close[i] <- population_inside
+    cmrshp@data$far[i] <- population_outside
   }
-  save(hfpub, file = 'hfpub.RData')
-}
+  save(cmrshp, file = 'cmrshp.RData')
+  }
 ```
 
-## Simple arithmetic
+## Wrap-up
 
-Calculate amount of people within district but outside of buffer area
+The `cmrshp` object now contains the “close” and “far” populations per
+each of the 189 districts (“close” meaning within 5 km of any health
+facility in any district, and “far” meaning not within 5km of a health
+facility).
+
+To get a flat file of these data, run something like:
 
 ``` r
-hfpub@data$magic_number <-
-  hfpub@data$population -
-  hfpub@data$population_in_buffer_within_district
+flat_file <- cmrshp@data %>%
+  dplyr::select(District, close, far, population) %>%
+  mutate(inaccuracy = population - close - far)
 ```
 
-## Create dataset
-
-Create a data base with one row per pixel and its respective population
-value
+Note that the `inaccuracy` column shows the difference between the
+*total* population for the district, and the sum of the `close` and
+`far` populations. These are very minor discrepancies occurring in only
+very few districts. These inaccuracies are likely due to issues with
+border handling (did not examine in depth).
 
 ``` r
-xyz <- rasterToPoints(poprast)
-xyz <- data.frame(xyz)
+table(flat_file$inaccuracy == 0)
 ```
+
+``` 
+
+FALSE  TRUE 
+   13   176 
+```
+
+``` r
+hist(flat_file$inaccuracy, breaks = 100)
+```
+
+![](figures/unnamed-chunk-13-1.png)<!-- -->
+
+To peak at it:
+
+``` r
+head(flat_file)
+```
+
+``` 
+   District     close       far population inaccuracy
+1     Kaele 194287.98      0.00  194287.98     0.0000
+2 Tchollire 128005.08 107843.96  235849.04     0.0000
+3  Meiganga 104042.20  38067.72  141958.12  -151.8075
+4     Lomie  37845.36  25285.92   63131.28     0.0000
+5       Nwa  87403.05      0.00   87403.05     0.0000
+6  Bandjoun  43152.87      0.00   43152.87     0.0000
+```
+
+To double-check overall sums, one compare the overall district-level
+populations from the raster…
+
+``` r
+sum(populations)
+```
+
+    [1] 26281588
+
+… with the total of the close and far populations per our calculations
+(26.3 million):
+
+``` r
+flat_file %>%
+  summarise(close = sum(close),
+            far = sum(far))
+```
+
+``` 
+     close     far
+1 24957456 1340866
+```
+
+To write a csv:
+
+``` r
+library(readr)
+flat_file %>% write_csv('flat_file.csv')
+```
+
+<joe@databrew.cc>
